@@ -48,23 +48,35 @@ FSANZ-Assistant/
 ├── data/
 │   └── raw/                   # Local storage for PDFs and chunks
 │
-├── .env                       # API keys (NOT pushed to GitHub)
+├── .env                       # API keys (NOT pushed to GitHub — keep private)
 ├── requirements.txt           # Python dependencies
 └── README.md
 ```
 
 ---
 
-## ⚙️ Setup Instructions
+## 👥 Team Setup — Quick Start (Shared Cloud)
 
-### 1. Clone the Repository
+> **Recommended for group members** — Uses the same AWS S3 and Pinecone index. No re-indexing needed.
+
+### Step 1 — Get the `.env` file from your team leader
+The `.env` file contains all API keys. Your team leader will share it privately (WhatsApp / email).
+**Never commit this file to GitHub.**
+
+Place the file in the root of the project folder:
+```
+FSANZ-Regulatory-Assistant/
+└── .env   ← put it here
+```
+
+### Step 2 — Clone the Repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/FSANZ-Regulatory-Assistant.git
+git clone https://github.com/jaisurya14/FSANZ-Regulatory-Assistant.git
 cd FSANZ-Regulatory-Assistant
 ```
 
-### 2. Create and Activate Virtual Environment
+### Step 3 — Create and Activate Virtual Environment
 
 ```bash
 python -m venv venv
@@ -76,15 +88,59 @@ venv\Scripts\activate
 source venv/bin/activate
 ```
 
-### 3. Install Dependencies
+### Step 4 — Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Create Your `.env` File
+### Step 5 — Start the Backend (Terminal 1)
 
-Create a file called `.env` in the root folder with the following:
+```bash
+cd backend
+uvicorn main:app --reload --port 8000
+```
+
+### Step 6 — Start the Frontend (Terminal 2 — new window)
+
+```bash
+cd FSANZ-Regulatory-Assistant
+streamlit run frontend/ui.py
+```
+
+Open your browser and go to: **http://localhost:8501** 🎉
+
+---
+
+## ⚙️ Full Setup — Own Cloud Accounts (Optional)
+
+> Use this if you want your own independent AWS S3 and Pinecone setup.
+
+### 1️⃣ Get Anthropic API Key (for Claude LLM)
+1. Go to [console.anthropic.com](https://console.anthropic.com) → Sign up
+2. Navigate to **API Keys** → Create a new key
+3. Add at least **$5 credits** under Billing
+4. Copy the key
+
+### 2️⃣ Get Pinecone API Key (for vector search)
+1. Go to [app.pinecone.io](https://app.pinecone.io) → Sign up (free)
+2. Navigate to **API Keys** → Copy your key
+3. Go to **Indexes** → Create Index with:
+   - **Name:** `fsanz-index`
+   - **Dimensions:** `384`
+   - **Metric:** `cosine`
+
+### 3️⃣ Set Up AWS S3 (for cloud storage)
+1. Go to [aws.amazon.com](https://aws.amazon.com) → Create free account
+2. Open **S3** → Create a new bucket (e.g. `fsanz-assistant-yourname`)
+3. Open **IAM** → Users → Create a new user → Attach policy: `AmazonS3FullAccess`
+4. Under the user → **Security credentials** → Create Access Key
+5. Save your `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+6. Upload the FSANZ PDF into your S3 bucket under folder `raw/`
+
+### 4️⃣ Create Your `.env` File
+
+Create a file named `.env` in the root project folder:
 
 ```env
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
@@ -95,55 +151,27 @@ AWS_REGION=ap-southeast-2
 S3_BUCKET=your_s3_bucket_name_here
 ```
 
-> ⚠️ **Never share or commit your `.env` file. It contains sensitive API keys.**
-
-### 5. Set Up AWS S3
-
-- Create an S3 bucket (e.g., `fsanz-assistant-project`)
-- Upload the FSANZ Food Standards PDF to the bucket under `raw/`
-
-### 6. Set Up Pinecone
-
-- Create a free account at [pinecone.io](https://www.pinecone.io)
-- Create an index with:
-  - **Dimensions:** 384
-  - **Metric:** cosine
-  - **Index name:** `fsanz-index`
-
----
-
-## 🚀 Running the Project
-
-### Step 1 — Parse and Chunk the PDF
+### 5️⃣ Index the Data (one-time setup)
 
 ```bash
-python backend/parse_pdf.py
+python backend/parse_pdf.py        # Extract and chunk the FSANZ PDF
+python backend/embed_and_index.py  # Embed chunks and push to Pinecone
 ```
 
-### Step 2 — Embed and Index to Pinecone
+### 6️⃣ Run the App
 
-```bash
-python backend/embed_and_index.py
-```
-
-### Step 3 — Start the Backend API
-
-Open a terminal and run:
-
+**Terminal 1:**
 ```bash
 cd backend
 uvicorn main:app --reload --port 8000
 ```
 
-### Step 4 — Start the Frontend UI
-
-Open a **second terminal** and run:
-
+**Terminal 2:**
 ```bash
 streamlit run frontend/ui.py
 ```
 
-Then open your browser and go to: **http://localhost:8501**
+Open: **http://localhost:8501**
 
 ---
 
@@ -152,7 +180,7 @@ Then open your browser and go to: **http://localhost:8501**
 ### 🗨️ Chat Assistant Tab
 - Ask natural language questions about FSANZ food standards
 - Get AI-generated answers backed by the actual regulatory document
-- Example questions are provided in the sidebar
+- Example questions provided in the sidebar
 
 ### ✅ Compliance Checker Tab
 - Paste any ingredient list (e.g., from a food label)
@@ -197,9 +225,10 @@ Display to User
 
 ## 🔐 Security Notes
 
-- `.env` file is listed in `.gitignore` and will **not** be pushed to GitHub
+- `.env` file is listed in `.gitignore` — it will **never** be pushed to GitHub
 - Never hardcode API keys in any Python file
-- Rotate your API keys if they are ever accidentally exposed
+- Share the `.env` file only via private channels (WhatsApp, email)
+- Rotate your API keys immediately if they are ever accidentally exposed
 
 ---
 
