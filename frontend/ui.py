@@ -88,28 +88,64 @@ with tab1:
 # =====================
 with tab2:
     st.subheader("AI Compliance Checker")
-    st.markdown("Paste your product ingredient list below. The system will automatically check each ingredient against the FSANZ Food Standards Code and flag any compliance issues.")
+    st.markdown("Check your product ingredient list against the FSANZ Food Standards Code. Type your ingredients **or** upload a photo of your food label.")
 
-    default_input = st.session_state.pop("compliance_input", "")
-
-    ingredient_input = st.text_area(
-        "Paste your ingredient list here",
-        value=default_input,
-        placeholder="e.g. Filtered water, apple juice (30%), sugar (45g/kg), natural flavour, potassium sorbate (200mg/kg)",
-        height=120
+    # --- Input Method Toggle ---
+    input_method = st.radio(
+        "How would you like to provide your ingredients?",
+        ["Type / Paste Ingredients", "Upload Ingredient Label Image"],
+        horizontal=True
     )
 
+    ingredient_input = ""
+    uploaded_image   = None
+
+    if input_method == "Type / Paste Ingredients":
+        default_input    = st.session_state.pop("compliance_input", "")
+        ingredient_input = st.text_area(
+            "Paste your ingredient list here",
+            value=default_input,
+            placeholder="e.g. Filtered water, apple juice (30%), sugar (45g/kg), natural flavour, potassium sorbate (200mg/kg)",
+            height=120
+        )
+
+    else:
+        st.session_state.pop("compliance_input", None)
+        uploaded_image = st.file_uploader(
+            "Upload a photo of your food product label",
+            type=["jpg", "jpeg", "png", "webp"],
+            help="Take a clear photo of the ingredients list on the food packaging"
+        )
+        if uploaded_image:
+            st.image(uploaded_image, caption="Uploaded label", width=400)
+            st.success("Image uploaded. Click Check Compliance to extract and check ingredients.")
+
+    st.write("")
     if st.button("Check Compliance", type="primary", use_container_width=True):
-        if not ingredient_input.strip():
+
+        # Validate input
+        if input_method == "Type / Paste Ingredients" and not ingredient_input.strip():
             st.warning("Please enter an ingredient list first.")
+        elif input_method == "Upload Ingredient Label Image" and uploaded_image is None:
+            st.warning("Please upload an image first.")
         else:
-            with st.spinner("Checking each ingredient against FSANZ Code... This may take 30-60 seconds."):
+            with st.spinner("Analysing ingredients against FSANZ Code... Please wait."):
                 try:
-                    res  = requests.post(
-                        f"{API_URL}/check-compliance",
-                        json={"ingredient_text": ingredient_input},
-                        timeout=120
-                    )
+                    # Call correct endpoint based on input method
+                    if input_method == "Upload Ingredient Label Image":
+                        image_bytes = uploaded_image.read()
+                        res = requests.post(
+                            f"{API_URL}/check-compliance-image",
+                            files={"file": (uploaded_image.name, image_bytes, uploaded_image.type)},
+                            timeout=180
+                        )
+                    else:
+                        res = requests.post(
+                            f"{API_URL}/check-compliance",
+                            json={"ingredient_text": ingredient_input},
+                            timeout=180
+                        )
+
                     data = res.json()
 
                     st.divider()
