@@ -3,7 +3,7 @@ import os
 import json
 from dotenv import load_dotenv
 
-load_dotenv(dotenv_path="../.env")
+load_dotenv(dotenv_path="../.env", override=True)
 
 # Connect to AWS S3
 s3_client = boto3.client(

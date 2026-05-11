@@ -7,7 +7,7 @@ from pinecone import Pinecone
 import anthropic
 import boto3
 
-load_dotenv(dotenv_path="../.env")
+load_dotenv(dotenv_path="../.env", override=True)
 
 # Load all models once
 print("Loading models...")
