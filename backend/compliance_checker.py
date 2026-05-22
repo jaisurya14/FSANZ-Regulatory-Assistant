@@ -3,20 +3,7 @@ import re
 import json
 import base64
 from datetime import datetime
-from dotenv import load_dotenv
-import anthropic
-import boto3
-from sentence_transformers import SentenceTransformer
-from pinecone import Pinecone
-
-load_dotenv(dotenv_path="../.env", override=True)
-
-claude          = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-s3              = boto3.client('s3', region_name=os.getenv("AWS_REGION"))
-BUCKET          = os.getenv("S3_BUCKET")
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-pc              = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-pinecone_index  = pc.Index("fsanz-index")
+from utils import embedding_model, pinecone_index, _claude_create, extract_json, log_to_s3
 
 # Load E-number mapping
 _enumber_map_path = os.path.join(os.path.dirname(__file__), "enumber_map.json")
@@ -33,6 +20,7 @@ ENUMBER_LOOKUP = {k.lower(): v for k, v in ENUMBER_MAP.items()}
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
+
 
 def normalise_ingredient_name(name: str) -> str:
     """
@@ -67,29 +55,6 @@ def normalise_ingredient_name(name: str) -> str:
 
     return name_lower
 
-def extract_json(text: str):
-    """Robustly extract JSON from Claude response"""
-    text = re.sub(r"```(?:json)?\s*", "", text)
-    text = re.sub(r"```", "", text)
-    text = text.strip()
-    try:
-        return json.loads(text)
-    except:
-        pass
-    match = re.search(r'\[.*\]', text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except:
-            pass
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except:
-            pass
-    raise ValueError(f"Could not extract JSON: {text[:200]}")
-
 
 def get_fsanz_context(query: str, top_k: int = 8) -> str:
     """Search Pinecone for relevant FSANZ content"""
@@ -97,17 +62,6 @@ def get_fsanz_context(query: str, top_k: int = 8) -> str:
     results = pinecone_index.query(vector=vector, top_k=top_k, include_metadata=True)
     return "\n\n---\n\n".join([r["metadata"].get("text", "") for r in results["matches"] if r.get("metadata")])
 
-
-def log_to_s3(folder: str, data: dict):
-    """Save any report to S3"""
-    key = f"{folder}/{datetime.utcnow().strftime('%Y-%m-%d')}/{datetime.utcnow().strftime('%H-%M-%S')}.json"
-    s3.put_object(
-        Bucket=BUCKET,
-        Key=key,
-        Body=json.dumps(data, indent=2).encode('utf-8'),
-        ContentType='application/json'
-    )
-    print(f"Logged to S3: {key}")
 
 
 # ─────────────────────────────────────────────
@@ -125,7 +79,7 @@ Convert American spelling to Australian e.g. sulfur becomes sulphur, flavor beco
 
 Ingredient list: {ingredient_text}"""
 
-    response = claude.messages.create(
+    response = _claude_create(
         model="claude-sonnet-4-6",
         max_tokens=800,
         messages=[{"role": "user", "content": prompt}]
@@ -136,7 +90,7 @@ Ingredient list: {ingredient_text}"""
         for item in ingredients:
             item["ingredient"] = normalise_ingredient_name(item["ingredient"])
         return ingredients
-    except:
+    except Exception:
         return []
 
 
@@ -149,7 +103,7 @@ Format: [{"ingredient": "sugar", "amount": "45g/kg"}, {"ingredient": "water", "a
 Convert E-numbers to full names. Convert American spelling to Australian spelling.
 If no ingredients found return: []"""
 
-    response = claude.messages.create(
+    response = _claude_create(
         model="claude-sonnet-4-6",
         max_tokens=800,
         messages=[{"role": "user", "content": [
@@ -159,7 +113,7 @@ If no ingredients found return: []"""
     )
     try:
         return extract_json(response.content[0].text)
-    except:
+    except Exception:
         return []
 
 
@@ -208,7 +162,7 @@ Status rules:
 - WARNING: allergen needs label declaration, near limit, amount unclear, conditional, or not found in FSANZ
 - FAIL: clearly exceeds maximum permitted level or explicitly not permitted under FSANZ"""
 
-    response = claude.messages.create(
+    response = _claude_create(
         model="claude-sonnet-4-6",
         max_tokens=2000,
         messages=[{"role": "user", "content": prompt}]
@@ -325,7 +279,7 @@ Check these requirements:
 6. Warning statements where required
 7. Product name and description accurate"""
 
-    response = claude.messages.create(
+    response = _claude_create(
         model="claude-sonnet-4-6",
         max_tokens=2000,
         messages=[{"role": "user", "content": prompt}]
@@ -338,7 +292,7 @@ Check these requirements:
         checks  = extract_json(raw)
         if isinstance(checks, dict):
             checks = [checks]
-    except:
+    except Exception:
         checks = [{"requirement": "Labelling Check", "status": "WARNING",
                    "message": "Could not complete labelling check. Manual review recommended.",
                    "standard": "FSANZ Food Standards Code", "recommendation": "Consult FSANZ labelling requirements."}]

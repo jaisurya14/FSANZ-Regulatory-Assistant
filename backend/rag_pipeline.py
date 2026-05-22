@@ -1,46 +1,10 @@
-import os
-import json
 from datetime import datetime
-from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
-from pinecone import Pinecone
-import anthropic
-import boto3
+from utils import embedding_model, pinecone_index, _claude_create, log_to_s3
 
-load_dotenv(dotenv_path="../.env", override=True)
-
-# Load all models once
-print("Loading models...")
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-pinecone_index = pc.Index("fsanz-index")
-claude_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-s3_client = boto3.client('s3', region_name=os.getenv("AWS_REGION"))
-BUCKET = os.getenv("S3_BUCKET")
-print("Ready.")
-
-def log_to_s3(question: str, answer: str, pages: list):
-    """Save every question and answer to S3 for audit trail"""
-    log_entry = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "question": question,
-        "answer": answer,
-        "pages_referenced": pages
-    }
-    key = f"logs/{datetime.utcnow().strftime('%Y-%m-%d')}/{datetime.utcnow().strftime('%H-%M-%S')}.json"
-    s3_client.put_object(
-        Bucket=BUCKET,
-        Key=key,
-        Body=json.dumps(log_entry, indent=2).encode('utf-8'),
-        ContentType='application/json'
-    )
-    print(f"Logged to S3: {key}")
 
 def answer_question(question: str) -> dict:
-    # Step 1: Embed question
     question_vector = embedding_model.encode(question).tolist()
 
-    # Step 2: Search Pinecone
     results = pinecone_index.query(
         vector=question_vector,
         top_k=5,
@@ -51,7 +15,6 @@ def answer_question(question: str) -> dict:
     pages  = [r["metadata"].get("page", r["metadata"].get("source", "unknown")) for r in results["matches"] if r.get("metadata")]
     context = "\n\n---\n\n".join(chunks)
 
-    # Step 3: Ask Claude
     prompt = f"""You are an expert regulatory affairs assistant specialising in the FSANZ Food Standards Code for Australia and New Zealand.
 
 Your job is to answer food regulatory questions clearly and professionally for food product developers.
@@ -79,7 +42,7 @@ List any conditions, maximum levels, exceptions, or additional requirements.
 Be concise, professional, and accurate. If genuinely unsure, say so clearly.
 """
 
-    response = claude_client.messages.create(
+    response = _claude_create(
         model="claude-sonnet-4-6",
         max_tokens=2048,
         messages=[{"role": "user", "content": prompt}]
@@ -89,14 +52,18 @@ Be concise, professional, and accurate. If genuinely unsure, say so clearly.
         raise ValueError("No text response received from Claude.")
     answer = response.content[0].text
 
-    # Step 4: Log to S3 (non-fatal)
     try:
-        log_to_s3(question, answer, pages)
+        log_to_s3("logs", {
+            "timestamp":       datetime.utcnow().isoformat(),
+            "question":        question,
+            "answer":          answer,
+            "pages_referenced": pages,
+        })
     except Exception as e:
         print(f"[log_to_s3] Warning: {e}")
 
     return {
-        "answer": answer,
+        "answer":           answer,
         "pages_referenced": pages,
-        "source": "FSANZ Food Standards Code, March 2025"
+        "source":           "FSANZ Food Standards Code, March 2025",
     }

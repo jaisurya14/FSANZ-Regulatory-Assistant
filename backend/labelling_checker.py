@@ -1,24 +1,7 @@
-import os
 import re
 import json
 from datetime import datetime
-from pathlib import Path
-from dotenv import dotenv_values
-import anthropic
-import boto3
-from sentence_transformers import SentenceTransformer
-from pinecone import Pinecone
-
-_env = dotenv_values(Path(__file__).parent.parent / ".env")
-def _get(key: str) -> str:
-    return _env.get(key) or os.environ.get(key, "")
-
-claude          = anthropic.Anthropic(api_key=_get("ANTHROPIC_API_KEY"))
-s3              = boto3.client('s3', region_name=_get("AWS_REGION"))
-BUCKET          = _get("S3_BUCKET")
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-pc              = Pinecone(api_key=_get("PINECONE_API_KEY"))
-pinecone_index  = pc.Index("fsanz-index")
+from utils import embedding_model, pinecone_index, _claude_create, extract_json, log_to_s3
 
 LABEL_FIELDS = [
     "product_name",
@@ -46,27 +29,6 @@ FIELD_LABELS = {
     "lot_identification":    "Lot Identification",
 }
 
-
-def extract_json(text: str):
-    text = re.sub(r"```(?:json)?\s*", "", text)
-    text = re.sub(r"```", "", text).strip()
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    match = re.search(r'\[.*\]', text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except Exception:
-            pass
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except Exception:
-            pass
-    raise ValueError(f"Could not extract JSON: {text[:200]}")
 
 
 def get_labelling_context(label_data: dict) -> str:
@@ -124,7 +86,7 @@ Status rules:
 
 Fields to check (in order): product_name, business_name_address, ingredient_list, allergen_declaration, nutrition_information, country_of_origin, storage_instructions, net_weight_volume, date_marking, lot_identification"""
 
-    response = claude.messages.create(
+    response = _claude_create(
         model="claude-sonnet-4-6",
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt}]
@@ -186,14 +148,7 @@ def log_labelling_report_to_s3(label_data: dict, report: dict):
         "checks":         report["checks"],
         "next_steps":     report["next_steps"],
     }
-    key = f"labelling-logs/{datetime.utcnow().strftime('%Y-%m-%d')}/{datetime.utcnow().strftime('%H-%M-%S')}.json"
-    s3.put_object(
-        Bucket=BUCKET,
-        Key=key,
-        Body=json.dumps(log, indent=2).encode("utf-8"),
-        ContentType="application/json"
-    )
-    print(f"Labelling report logged to S3: {key}")
+    log_to_s3("labelling-logs", log)
 
 
 def generate_label_html(label_data: dict) -> str:
@@ -250,7 +205,7 @@ STYLING DETAILS:
 
 Return ONLY the complete HTML document. No explanation, no markdown, no code fences."""
 
-    response = claude.messages.create(
+    response = _claude_create(
         model="claude-sonnet-4-6",
         max_tokens=6000,
         messages=[{"role": "user", "content": prompt}]

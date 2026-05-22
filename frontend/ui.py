@@ -139,7 +139,7 @@ with tab1:
         with st.chat_message("assistant"):
             with st.spinner("Searching FSANZ Code..."):
                 try:
-                    res = requests.post(f"{API_URL}/ask", json={"question": user_input}, timeout=60)
+                    res = requests.post(f"{API_URL}/ask", json={"question": user_input}, timeout=180)
                     if res.status_code != 200:
                         st.error(f"Backend error {res.status_code}: {res.text}")
                     else:

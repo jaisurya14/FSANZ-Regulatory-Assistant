@@ -1,46 +1,7 @@
-import os
 import re
 import json
 from datetime import datetime
-from pathlib import Path
-from dotenv import dotenv_values
-import anthropic
-import boto3
-from sentence_transformers import SentenceTransformer
-from pinecone import Pinecone
-
-_env = dotenv_values(Path(__file__).parent.parent / ".env")
-def _get(key: str) -> str:
-    return _env.get(key) or os.environ.get(key, "")
-
-claude          = anthropic.Anthropic(api_key=_get("ANTHROPIC_API_KEY"))
-s3              = boto3.client('s3', region_name=_get("AWS_REGION"))
-BUCKET          = _get("S3_BUCKET")
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-pc              = Pinecone(api_key=_get("PINECONE_API_KEY"))
-pinecone_index  = pc.Index("fsanz-index")
-
-
-def extract_json(text: str):
-    text = re.sub(r"```(?:json)?\s*", "", text)
-    text = re.sub(r"```", "", text).strip()
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    match = re.search(r'\[.*\]', text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except Exception:
-            pass
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except Exception:
-            pass
-    raise ValueError(f"Could not extract JSON: {text[:200]}")
+from utils import embedding_model, pinecone_index, _claude_create, extract_json, log_to_s3
 
 
 def get_claims_context() -> str:
@@ -113,7 +74,7 @@ Status definitions:
 - WARNING: claim is conditional, comparative, or cannot be fully confirmed from the NIP alone
 - REJECTED: value does not meet the threshold, exceeds the limit, or nutrient is not declared in the NIP"""
 
-    response = claude.messages.create(
+    response = _claude_create(
         model="claude-sonnet-4-6",
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt}]
@@ -147,13 +108,7 @@ def log_claims_report_to_s3(product_name: str, report: dict):
         "overall":      report["overall_status"],
         "results":      report["results"],
     }
-    key = f"nutrition-claims-logs/{datetime.utcnow().strftime('%Y-%m-%d')}/{datetime.utcnow().strftime('%H-%M-%S')}.json"
-    s3.put_object(
-        Bucket=BUCKET,
-        Key=key,
-        Body=json.dumps(log, indent=2).encode("utf-8"),
-        ContentType="application/json"
-    )
+    log_to_s3("nutrition-claims-logs", log)
 
 
 def run_nutrition_claims_check(product_name: str, product_type: str, nip_text: str, selected_claims: list) -> dict:

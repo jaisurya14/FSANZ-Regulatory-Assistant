@@ -1,7 +1,9 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List
+import anthropic
 from rag_pipeline import answer_question
 from compliance_checker import (
     run_ingredients_compliance,
@@ -10,6 +12,15 @@ from compliance_checker import (
 )
 from labelling_checker import run_labelling_check, generate_label_html
 from nutrition_claims_checker import run_nutrition_claims_check
+
+def _handle_overload(e: Exception):
+    """Return a 503 with a friendly message instead of crashing on API overload."""
+    if isinstance(e, anthropic.APIStatusError) and e.status_code == 529:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "The AI service is temporarily overloaded. Please wait 30 seconds and try again."}
+        )
+    raise e
 
 app = FastAPI(title="FSANZ Regulatory Assistant")
 
@@ -85,7 +96,10 @@ def health():
 def ask(request: QuestionRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
-    return answer_question(request.question)
+    try:
+        return answer_question(request.question)
+    except Exception as e:
+        return _handle_overload(e)
 
 # ── Module 1: Ingredients Compliance (text) ─────────────────
 
@@ -93,7 +107,10 @@ def ask(request: QuestionRequest):
 def check_compliance(request: IngredientsRequest):
     if not request.ingredient_text.strip():
         raise HTTPException(status_code=400, detail="Ingredient text cannot be empty")
-    return run_ingredients_compliance(ingredient_text=request.ingredient_text)
+    try:
+        return run_ingredients_compliance(ingredient_text=request.ingredient_text)
+    except Exception as e:
+        return _handle_overload(e)
 
 # ── Module 1: Ingredients Compliance (image) ────────────────
 
@@ -103,18 +120,24 @@ async def check_compliance_image(file: UploadFile = File(...)):
     if file.content_type not in allowed:
         raise HTTPException(status_code=400, detail="Only JPEG, PNG, WEBP or GIF supported.")
     image_bytes = await file.read()
-    return run_ingredients_compliance(
-        ingredient_text="Uploaded from image",
-        image_bytes=image_bytes,
-        media_type=file.content_type
-    )
+    try:
+        return run_ingredients_compliance(
+            ingredient_text="Uploaded from image",
+            image_bytes=image_bytes,
+            media_type=file.content_type
+        )
+    except Exception as e:
+        return _handle_overload(e)
 
 # ── Module 2: Labelling Compliance (form) ───────────────────
 
 @app.post("/check-labelling")
 def check_labelling(request: LabellingRequest):
     form_data = request.model_dump()
-    return run_labelling_compliance(form_data)
+    try:
+        return run_labelling_compliance(form_data)
+    except Exception as e:
+        return _handle_overload(e)
 
 # ── Module: Label Compliance (10 structured fields) ─────────
 
@@ -123,7 +146,10 @@ def check_label(request: LabelCheckRequest):
     label_data = request.model_dump()
     if not any(v.strip() for v in label_data.values()):
         raise HTTPException(status_code=400, detail="At least one label field must be provided.")
-    return run_labelling_check(label_data)
+    try:
+        return run_labelling_check(label_data)
+    except Exception as e:
+        return _handle_overload(e)
 
 # ── Module: Generate Label HTML ──────────────────────────────
 
@@ -132,8 +158,11 @@ def generate_label(request: LabelCheckRequest):
     label_data = request.model_dump()
     if not any(v.strip() for v in label_data.values()):
         raise HTTPException(status_code=400, detail="At least one label field must be provided.")
-    html = generate_label_html(label_data)
-    return {"html": html}
+    try:
+        html = generate_label_html(label_data)
+        return {"html": html}
+    except Exception as e:
+        return _handle_overload(e)
 
 # ── Module: Nutrition Claims Validator ───────────────────────
 
@@ -143,12 +172,15 @@ def check_nutrition_claims(request: NutritionClaimsRequest):
         raise HTTPException(status_code=400, detail="NIP text cannot be empty.")
     if not request.selected_claims:
         raise HTTPException(status_code=400, detail="At least one claim must be selected.")
-    return run_nutrition_claims_check(
-        product_name=request.product_name,
-        product_type=request.product_type,
-        nip_text=request.nip_text,
-        selected_claims=request.selected_claims
-    )
+    try:
+        return run_nutrition_claims_check(
+            product_name=request.product_name,
+            product_type=request.product_type,
+            nip_text=request.nip_text,
+            selected_claims=request.selected_claims
+        )
+    except Exception as e:
+        return _handle_overload(e)
 
 # ── Module 3: Combined Compliance (text + form) ─────────────
 
@@ -156,7 +188,10 @@ def check_nutrition_claims(request: NutritionClaimsRequest):
 def check_combined(request: CombinedRequest):
     form_data = request.model_dump()
     ingredient_text = form_data.pop("ingredient_text")
-    return run_combined_compliance(ingredient_text=ingredient_text, form_data=form_data)
+    try:
+        return run_combined_compliance(ingredient_text=ingredient_text, form_data=form_data)
+    except Exception as e:
+        return _handle_overload(e)
 
 # ── Module 3: Combined Compliance (image + form) ────────────
 
