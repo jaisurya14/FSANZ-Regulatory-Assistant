@@ -85,6 +85,8 @@ Be concise, professional, and accurate. If genuinely unsure, say so clearly.
         messages=[{"role": "user", "content": prompt}]
     )
 
+    if not response.content or not hasattr(response.content[0], "text"):
+        raise ValueError("No text response received from Claude.")
     answer = response.content[0].text
 
     # Step 4: Log to S3 (non-fatal)

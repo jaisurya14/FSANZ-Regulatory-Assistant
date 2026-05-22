@@ -20,8 +20,12 @@ pinecone_index  = pc.Index("fsanz-index")
 
 # Load E-number mapping
 _enumber_map_path = os.path.join(os.path.dirname(__file__), "enumber_map.json")
-with open(_enumber_map_path, "r", encoding="utf-8") as f:
-    ENUMBER_MAP = json.load(f)
+try:
+    with open(_enumber_map_path, "r", encoding="utf-8") as f:
+        ENUMBER_MAP = json.load(f)
+except FileNotFoundError:
+    print(f"Warning: enumber_map.json not found. E-number mapping disabled.")
+    ENUMBER_MAP = {}
 # Build lowercase lookup
 ENUMBER_LOOKUP = {k.lower(): v for k, v in ENUMBER_MAP.items()}
 

@@ -113,7 +113,7 @@ async def check_compliance_image(file: UploadFile = File(...)):
 
 @app.post("/check-labelling")
 def check_labelling(request: LabellingRequest):
-    form_data = request.dict()
+    form_data = request.model_dump()
     return run_labelling_compliance(form_data)
 
 # ── Module: Label Compliance (10 structured fields) ─────────
@@ -154,7 +154,7 @@ def check_nutrition_claims(request: NutritionClaimsRequest):
 
 @app.post("/check-combined")
 def check_combined(request: CombinedRequest):
-    form_data = request.dict()
+    form_data = request.model_dump()
     ingredient_text = form_data.pop("ingredient_text")
     return run_combined_compliance(ingredient_text=ingredient_text, form_data=form_data)
 
