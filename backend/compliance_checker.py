@@ -91,7 +91,7 @@ def get_fsanz_context(query: str, top_k: int = 8) -> str:
     """Search Pinecone for relevant FSANZ content"""
     vector  = embedding_model.encode(query).tolist()
     results = pinecone_index.query(vector=vector, top_k=top_k, include_metadata=True)
-    return "\n\n---\n\n".join([r["metadata"]["text"] for r in results["matches"]])
+    return "\n\n---\n\n".join([r["metadata"].get("text", "") for r in results["matches"] if r.get("metadata")])
 
 
 def log_to_s3(folder: str, data: dict):

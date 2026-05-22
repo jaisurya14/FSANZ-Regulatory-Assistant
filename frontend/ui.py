@@ -1,30 +1,52 @@
+import os
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 
-API_URL = "http://localhost:8000"
+API_URL = os.environ.get("API_URL", "http://localhost:8000")
 
 st.set_page_config(page_title="FSANZ Regulatory Assistant", layout="wide")
 st.title("FSANZ Regulatory Affairs Assistant")
 st.caption("Powered by FSANZ Food Standards Code, March 2025")
 
+# ── Session state defaults ───────────────────────────────────
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
+if "label_payload" not in st.session_state:
+    st.session_state["label_payload"] = None
+if "generated_label_html" not in st.session_state:
+    st.session_state["generated_label_html"] = None
+
 
 # ════════════════════════════════════════════════════════════
-# HELPER FUNCTIONS — defined first so all tabs can use them
+# HELPER FUNCTIONS
 # ════════════════════════════════════════════════════════════
 
 def _display_checks(checks: list, mode: str):
     for check in checks:
-        label  = check.get("ingredient", check.get("requirement", "Item")).title()
-        amount = f" ({check['amount']})" if mode == "ingredients" and check.get("amount") else ""
+        if mode == "ingredients":
+            label = check.get("ingredient", "Item").title()
+            amount = f" ({check['amount']})" if check.get("amount") else ""
+        elif mode == "label":
+            label = check.get("label", check.get("field", "Item"))
+            amount = ""
+        elif mode == "claims":
+            label = check.get("claim", "Claim")
+            amount = ""
+        else:
+            label = check.get("requirement", "Item")
+            amount = ""
 
-        if check["status"] == "PASS":
-            st.success(f"✅ **{label}**{amount}  \n{check['message']}")
-        elif check["status"] == "WARNING":
-            st.warning(f"⚠️ **{label}**{amount}  \n{check['message']}")
+        status = check.get("status", "WARNING")
+
+        if status in ("PASS", "APPROVED"):
+            st.success(f"✅ **{label}**{amount}  \n{check.get('message', '')}")
+        elif status == "WARNING":
+            st.warning(f"⚠️ **{label}**{amount}  \n{check.get('message', '')}")
             if check.get("recommendation"):
                 st.markdown(f"> 💡 **Recommendation:** {check['recommendation']}")
         else:
-            st.error(f"❌ **{label}**{amount}  \n{check['message']}")
+            st.error(f"❌ **{label}**{amount}  \n{check.get('message', '')}")
             if check.get("recommendation"):
                 st.markdown(f"> 💡 **Recommendation:** {check['recommendation']}")
 
@@ -35,27 +57,30 @@ def _display_checks(checks: list, mode: str):
 
 def _display_compliance_results(data: dict, mode: str):
     st.divider()
-    if data["overall_status"] == "PASS":
-        st.success(f"✅ OVERALL STATUS: COMPLIANT — {data['summary']}")
-    elif data["overall_status"] == "WARNING":
-        st.warning(f"⚠️ OVERALL STATUS: REVIEW REQUIRED — {data['summary']}")
-    elif data["overall_status"] == "FAIL":
-        st.error(f"❌ OVERALL STATUS: NON-COMPLIANT — {data['summary']}")
+    overall = data.get("overall_status", "")
+    summary = data.get("summary", "")
+    if overall == "PASS":
+        st.success(f"✅ OVERALL STATUS: COMPLIANT — {summary}")
+    elif overall == "WARNING":
+        st.warning(f"⚠️ OVERALL STATUS: REVIEW REQUIRED — {summary}")
+    elif overall == "FAIL":
+        st.error(f"❌ OVERALL STATUS: NON-COMPLIANT — {summary}")
     else:
-        st.error(f"ERROR — {data['summary']}")
+        st.error(f"ERROR — {summary}")
 
     st.divider()
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Checked", data["total_checks"])
-    col2.metric("Passed",        data["passed"])
-    col3.metric("Warnings",      data["warnings"])
-    col4.metric("Failed",        data["failed"])
+    col1.metric("Total Checked", data.get("total_checks", 0))
+    col2.metric("Passed",        data.get("passed", 0))
+    col3.metric("Warnings",      data.get("warnings", 0))
+    col4.metric("Failed",        data.get("failed", 0))
 
     st.divider()
     st.subheader("Detailed Results")
-    _display_checks(data["checks"], mode=mode)
+    _display_checks(data.get("checks", []), mode=mode)
 
-# ── Sidebar ─────────────────────────────────────────────────
+
+# ── Sidebar ──────────────────────────────────────────────────
 with st.sidebar:
     st.header("Chat — Try These Questions")
     examples = [
@@ -78,19 +103,19 @@ with st.sidebar:
     st.divider()
     st.markdown("**How it works**")
     st.markdown("""
-- **Chat Tab** → Ask any FSANZ regulatory question
-- **Ingredients Tab** → Check ingredients via text or image
-- **Labelling Tab** → Check your product label via form
-- **Combined Tab** → Full compliance check in one go
+- **Chat** → Ask any FSANZ regulatory question
+- **Compliance** → Check ingredients via text or image
+- **Labelling** → Check label fields + generate label
+- **Nutrition Claims** → Validate claims against FSANZ
 - All queries are logged to AWS S3
 """)
 
 # ── Tabs ─────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
     "💬 Chat Assistant",
-    "🧪 Ingredients Compliance",
+    "🧪 Compliance Checker",
     "🏷️ Labelling Compliance",
-    "✅ Combined Compliance"
+    "🥗 Nutrition Claims"
 ])
 
 
@@ -100,10 +125,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.subheader("Ask a Regulatory Question")
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    for msg in st.session_state.messages:
+    for msg in st.session_state["messages"]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
@@ -111,23 +133,26 @@ with tab1:
     user_input = st.chat_input("Ask a regulatory question...") or prefill
 
     if user_input:
-        st.session_state.messages.append({"role": "user", "content": user_input})
+        st.session_state["messages"].append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
         with st.chat_message("assistant"):
             with st.spinner("Searching FSANZ Code..."):
                 try:
-                    res  = requests.post(f"{API_URL}/ask", json={"question": user_input}, timeout=30)
-                    data = res.json()
-                    st.markdown(data["answer"])
-                    st.caption(f"Source: {data['source']} | Pages: {data['pages_referenced']}")
-                    st.session_state.messages.append({"role": "assistant", "content": data["answer"]})
+                    res = requests.post(f"{API_URL}/ask", json={"question": user_input}, timeout=60)
+                    if res.status_code != 200:
+                        st.error(f"Backend error {res.status_code}: {res.text}")
+                    else:
+                        data = res.json()
+                        st.markdown(data.get("answer", "No answer returned."))
+                        st.caption(f"Source: {data.get('source', '')} | Pages: {data.get('pages_referenced', [])}")
+                        st.session_state["messages"].append({"role": "assistant", "content": data.get("answer", "")})
                 except Exception as e:
-                    st.error(f"Backend error: {e}")
+                    st.error(f"Connection error: {e}")
 
 
 # ════════════════════════════════════════════════════════════
-# TAB 2 — INGREDIENTS COMPLIANCE
+# TAB 2 — COMPLIANCE CHECKER
 # ════════════════════════════════════════════════════════════
 with tab2:
     st.subheader("Ingredients Compliance Checker")
@@ -137,7 +162,7 @@ with tab2:
         "Choose input method:",
         ["Type / Paste Ingredients", "Upload Ingredient Label Image"],
         horizontal=True,
-        key="ing_input_method"
+        key="compliance_input_method"
     )
 
     ingredient_input = ""
@@ -184,204 +209,248 @@ with tab2:
                             json={"ingredient_text": ingredient_input},
                             timeout=180
                         )
-                    data = res.json()
-                    _display_compliance_results(data, mode="ingredients")
+                    if res.status_code != 200:
+                        st.error(f"Backend error {res.status_code}: {res.text}")
+                    else:
+                        data = res.json()
+                        _display_compliance_results(data, mode="ingredients")
                 except Exception as e:
-                    st.error(f"Backend error: {e}")
+                    st.error(f"Connection error: {e}")
 
 
 # ════════════════════════════════════════════════════════════
-# TAB 3 — LABELLING COMPLIANCE
+# TAB 3 — LABELLING COMPLIANCE + LABEL GENERATOR
 # ════════════════════════════════════════════════════════════
 with tab3:
     st.subheader("Labelling Compliance Checker")
-    st.markdown("Fill in the details about your product label. The system will check whether it meets all FSANZ labelling requirements.")
+    st.markdown("Enter your 10 label fields. The tool checks each against FSANZ requirements and can generate a print-ready label.")
 
-    with st.form("labelling_form"):
+    with st.form("label_form"):
+        st.markdown("#### Product Details")
         col1, col2 = st.columns(2)
-
         with col1:
-            product_name     = st.text_input("Product Name", placeholder="e.g. Tropical Fruit Juice")
-            product_category = st.selectbox("Product Category", [
-                "Fruit and Vegetable Juice",
-                "Dairy Products",
-                "Meat and Meat Products",
-                "Bakery Products",
-                "Beverages",
-                "Snack Foods",
-                "Confectionery",
-                "Cereal Products",
-                "Seafood",
-                "Other"
-            ])
-            has_ingredients_list = st.radio("Ingredients List Present?", ["Yes", "No"], horizontal=True, key="lbl_ing")
-            has_nip              = st.radio("Nutrition Information Panel (NIP) Present?", ["Yes", "No"], horizontal=True, key="lbl_nip")
-
+            f_product_name          = st.text_input("Product Name *", placeholder="e.g. Raspberry Blast Fruit Drink")
+            f_net_weight_volume     = st.text_input("Net Weight / Volume *", placeholder="e.g. 500mL")
+            f_business_name_address = st.text_input("Business Name & Address *", placeholder="e.g. Fresh Foods Pty Ltd, 12 Market Street, Sydney NSW 2000")
+            f_country_of_origin     = st.text_input("Country of Origin", placeholder="e.g. Made in Australia from at least 80% Australian ingredients")
+            f_date_marking          = st.text_input("Date Marking", placeholder="e.g. Best Before: 30 Jun 2025")
         with col2:
-            has_date_marking        = st.radio("Date Marking Present? (Best Before / Use By)", ["Yes", "No"], horizontal=True, key="lbl_date")
-            has_country_of_origin   = st.radio("Country of Origin Labelling Present?", ["Yes", "No"], horizontal=True, key="lbl_coo")
-            has_allergen_declaration = st.radio("Allergen Declarations Present?", ["Yes", "No"], horizontal=True, key="lbl_allergen")
-            allergens               = st.text_input("List Allergens Present (if any)", placeholder="e.g. wheat, milk, eggs, soy")
-            has_warning_statements  = st.radio("Warning Statements Present (if required)?", ["Yes", "No", "Not Applicable"], horizontal=True, key="lbl_warn")
+            f_storage_instructions  = st.text_input("Storage Instructions", placeholder="e.g. Keep refrigerated below 4°C. Once opened consume within 3 days.")
+            f_lot_identification    = st.text_input("Lot Identification", placeholder="e.g. Lot No: A2025-042")
+            f_allergen_declaration  = st.text_area("Allergen Declaration", placeholder="e.g. Contains no allergens. May be produced in a facility that handles tree nuts.", height=80)
 
-        additional_notes = st.text_area("Additional Notes (optional)", placeholder="Any other label details...", height=80)
-        submitted        = st.form_submit_button("Check Labelling", type="primary", use_container_width=True)
+        st.markdown("#### Ingredient List")
+        f_ingredient_list = st.text_area(
+            "Ingredients (in descending order of weight)",
+            placeholder="e.g. Water, Apple Juice (30%), Raspberry Juice (8%), Sugar (45g/kg), Natural Flavour, Potassium Sorbate (200mg/kg)",
+            height=80
+        )
+
+        st.markdown("#### Nutrition Information Panel")
+        f_nutrition_information = st.text_area(
+            "Paste your NIP values",
+            placeholder="e.g. Energy 450kJ, Protein 0.5g, Fat 0g, Saturated Fat 0g, Carbohydrate 26.3g, Sugars 26.3g, Sodium 20mg, Vitamin C 112mg — per 250mL serve",
+            height=100
+        )
+
+        submitted = st.form_submit_button("Check Label Compliance", type="primary", use_container_width=True)
 
     if submitted:
-        if not product_name.strip():
-            st.warning("Please enter a product name.")
+        if not f_product_name.strip():
+            st.warning("Product Name is required.")
         else:
-            with st.spinner("Checking labelling requirements against FSANZ Code..."):
+            label_payload = {
+                "product_name":          f_product_name,
+                "business_name_address": f_business_name_address,
+                "ingredient_list":       f_ingredient_list,
+                "allergen_declaration":  f_allergen_declaration,
+                "nutrition_information": f_nutrition_information,
+                "country_of_origin":     f_country_of_origin,
+                "storage_instructions":  f_storage_instructions,
+                "net_weight_volume":     f_net_weight_volume,
+                "date_marking":          f_date_marking,
+                "lot_identification":    f_lot_identification,
+            }
+            st.session_state["label_payload"] = label_payload
+            st.session_state["generated_label_html"] = None
+
+            with st.spinner("Checking label against FSANZ Code..."):
                 try:
-                    payload = {
-                        "product_name":            product_name,
-                        "product_category":        product_category,
-                        "has_ingredients_list":    has_ingredients_list,
-                        "has_nip":                 has_nip,
-                        "has_date_marking":        has_date_marking,
-                        "has_country_of_origin":   has_country_of_origin,
-                        "has_allergen_declaration": has_allergen_declaration,
-                        "allergens":               allergens,
-                        "has_warning_statements":  has_warning_statements,
-                        "additional_notes":        additional_notes
-                    }
-                    res  = requests.post(f"{API_URL}/check-labelling", json=payload, timeout=180)
-                    data = res.json()
-                    _display_compliance_results(data, mode="labelling")
+                    res = requests.post(f"{API_URL}/check-label", json=label_payload, timeout=180)
+                    if res.status_code != 200:
+                        st.error(f"Backend error {res.status_code}: {res.text}")
+                    else:
+                        data = res.json()
+                        _display_compliance_results(data, mode="label")
+
+                        if data.get("next_steps"):
+                            st.subheader("📋 Recommended Next Steps")
+                            for i, step in enumerate(data["next_steps"], 1):
+                                st.markdown(f"{i}. {step}")
                 except Exception as e:
-                    st.error(f"Backend error: {e}")
+                    st.error(f"Connection error: {e}")
+
+    # ── Label Generator ──────────────────────────────────────
+    if st.session_state["label_payload"]:
+        st.divider()
+        st.subheader("🖨️ Generate Print-Ready Label")
+        st.markdown("Generate a formatted food label based on the fields you entered above.")
+
+        if st.button("Generate Label", type="secondary", use_container_width=True, key="btn_generate_label"):
+            with st.spinner("Generating your label..."):
+                try:
+                    res = requests.post(
+                        f"{API_URL}/generate-label",
+                        json=st.session_state["label_payload"],
+                        timeout=120
+                    )
+                    if res.status_code != 200:
+                        st.error(f"Backend error {res.status_code}: {res.text}")
+                    else:
+                        st.session_state["generated_label_html"] = res.json().get("html", "")
+                except Exception as e:
+                    st.error(f"Connection error: {e}")
+
+        if st.session_state["generated_label_html"]:
+            st.success("Label generated successfully!")
+            components.html(st.session_state["generated_label_html"], height=900, scrolling=True)
+            st.download_button(
+                label="⬇️ Download Label as HTML",
+                data=st.session_state["generated_label_html"],
+                file_name=f"{st.session_state['label_payload'].get('product_name', 'label').replace(' ', '_')}_label.html",
+                mime="text/html",
+                use_container_width=True
+            )
 
 
 # ════════════════════════════════════════════════════════════
-# TAB 4 — COMBINED COMPLIANCE
+# TAB 4 — NUTRITION CLAIMS VALIDATOR
 # ════════════════════════════════════════════════════════════
 with tab4:
-    st.subheader("Combined Compliance Checker")
-    st.markdown("Run a full FSANZ compliance check covering both ingredients and labelling in one go.")
+    st.subheader("Nutrition Claims Validator")
+    st.markdown("Paste your NIP values and tick the claims you want to make. The tool checks each claim against FSANZ Standard 1.2.7 thresholds.")
 
-    # Input method
-    comb_input_method = st.radio(
-        "How would you like to provide your ingredients?",
-        ["Type / Paste Ingredients", "Upload Ingredient Label Image"],
-        horizontal=True,
-        key="comb_input_method"
-    )
-
-    comb_ingredient_input = ""
-    comb_uploaded_image   = None
-
-    if comb_input_method == "Type / Paste Ingredients":
-        comb_ingredient_input = st.text_area(
-            "Paste your ingredient list here",
-            placeholder="e.g. Filtered water, apple juice (30%), sugar (45g/kg), natural flavour, potassium sorbate (200mg/kg)",
-            height=100,
-            key="comb_text"
-        )
-    else:
-        comb_uploaded_image = st.file_uploader(
-            "Upload a photo of your food product label",
-            type=["jpg", "jpeg", "png", "webp"],
-            key="comb_image"
-        )
-        if comb_uploaded_image:
-            st.image(comb_uploaded_image, caption="Uploaded label", width=400)
-
-    st.divider()
-    st.markdown("**Product Label Details**")
-
-    with st.form("combined_form"):
+    with st.form("nutrition_claims_form"):
+        st.markdown("#### Product Details")
         col1, col2 = st.columns(2)
-
         with col1:
-            comb_product_name     = st.text_input("Product Name", placeholder="e.g. Tropical Fruit Juice", key="comb_pname")
-            comb_product_category = st.selectbox("Product Category", [
-                "Fruit and Vegetable Juice", "Dairy Products", "Meat and Meat Products",
-                "Bakery Products", "Beverages", "Snack Foods", "Confectionery",
-                "Cereal Products", "Seafood", "Other"
-            ], key="comb_pcat")
-            comb_has_ing_list = st.radio("Ingredients List Present?", ["Yes", "No"], horizontal=True, key="comb_ing")
-            comb_has_nip      = st.radio("Nutrition Information Panel Present?", ["Yes", "No"], horizontal=True, key="comb_nip")
-
+            nc_product_name = st.text_input("Product Name", placeholder="e.g. Raspberry Blast Fruit Drink")
         with col2:
-            comb_has_date     = st.radio("Date Marking Present?", ["Yes", "No"], horizontal=True, key="comb_date")
-            comb_has_coo      = st.radio("Country of Origin Present?", ["Yes", "No"], horizontal=True, key="comb_coo")
-            comb_has_allergen = st.radio("Allergen Declarations Present?", ["Yes", "No"], horizontal=True, key="comb_alg")
-            comb_allergens    = st.text_input("List Allergens Present (if any)", placeholder="e.g. wheat, milk, soy", key="comb_alg_list")
-            comb_has_warn     = st.radio("Warning Statements Present?", ["Yes", "No", "Not Applicable"], horizontal=True, key="comb_warn")
+            nc_product_type = st.text_input("Product Type", placeholder="e.g. Fruit drink, beverage")
 
-        comb_notes    = st.text_area("Additional Notes (optional)", height=60, key="comb_notes")
-        comb_submitted = st.form_submit_button("Run Full Compliance Check", type="primary", use_container_width=True)
+        st.markdown("#### Nutrition Information Panel")
+        nc_nip_text = st.text_area(
+            "Paste your NIP values here",
+            placeholder=(
+                "e.g.\n"
+                "Energy: 450kJ per serve, 180kJ per 100mL\n"
+                "Protein: 0.5g per serve, 0.2g per 100mL\n"
+                "Fat: 0g per serve, 0g per 100mL\n"
+                "Saturated Fat: 0g\n"
+                "Carbohydrate: 26.3g per serve, 10.5g per 100mL\n"
+                "Sugars: 26.3g per serve, 10.5g per 100mL\n"
+                "Sodium: 20mg per serve, 8mg per 100mL\n"
+                "Vitamin C: 112mg per serve, 45mg per 100mL"
+            ),
+            height=180
+        )
 
-    if comb_submitted:
-        if comb_input_method == "Type / Paste Ingredients" and not comb_ingredient_input.strip():
-            st.warning("Please enter an ingredient list.")
-        elif comb_input_method == "Upload Ingredient Label Image" and comb_uploaded_image is None:
-            st.warning("Please upload an image.")
-        elif not comb_product_name.strip():
-            st.warning("Please enter a product name.")
+        st.markdown("#### Select Claims to Validate")
+        claims_col1, claims_col2, claims_col3 = st.columns(3)
+        with claims_col1:
+            c_low_fat        = st.checkbox("Low Fat")
+            c_reduced_fat    = st.checkbox("Reduced Fat")
+            c_low_sugar      = st.checkbox("Low Sugar / Low in Sugars")
+            c_no_added_sugar = st.checkbox("No Added Sugar")
+        with claims_col2:
+            c_low_sodium  = st.checkbox("Low Sodium / Low Salt")
+            c_high_fibre  = st.checkbox("High Fibre")
+            c_good_fibre  = st.checkbox("Good Source of Fibre")
+            c_high_protein = st.checkbox("High Protein")
+        with claims_col3:
+            c_vit_c    = st.checkbox("High in Vitamin C")
+            c_calcium  = st.checkbox("Source of Calcium")
+            c_light    = st.checkbox("Light / Lite")
+            c_diet     = st.checkbox("Diet")
+
+        nc_submitted = st.form_submit_button("Validate Claims", type="primary", use_container_width=True)
+
+    if nc_submitted:
+        selected_claims = [
+            claim for claim, selected in [
+                ("Low Fat",              c_low_fat),
+                ("Reduced Fat",          c_reduced_fat),
+                ("Low Sugar",            c_low_sugar),
+                ("No Added Sugar",       c_no_added_sugar),
+                ("Low Sodium",           c_low_sodium),
+                ("High Fibre",           c_high_fibre),
+                ("Good Source of Fibre", c_good_fibre),
+                ("High Protein",         c_high_protein),
+                ("High in Vitamin C",    c_vit_c),
+                ("Source of Calcium",    c_calcium),
+                ("Light / Lite",         c_light),
+                ("Diet",                 c_diet),
+            ] if selected
+        ]
+
+        if not nc_nip_text.strip():
+            st.warning("Please paste your NIP values.")
+        elif not selected_claims:
+            st.warning("Please select at least one claim to validate.")
         else:
-            with st.spinner("Running full compliance check... This may take a moment."):
+            with st.spinner("Validating claims against FSANZ thresholds..."):
                 try:
-                    if comb_input_method == "Upload Ingredient Label Image":
-                        image_bytes = comb_uploaded_image.read()
-                        res = requests.post(
-                            f"{API_URL}/check-combined-image",
-                            files={"file": (comb_uploaded_image.name, image_bytes, comb_uploaded_image.type)},
-                            data={
-                                "product_name": comb_product_name, "product_category": comb_product_category,
-                                "has_ingredients_list": comb_has_ing_list, "has_nip": comb_has_nip,
-                                "has_date_marking": comb_has_date, "has_country_of_origin": comb_has_coo,
-                                "has_allergen_declaration": comb_has_allergen, "allergens": comb_allergens,
-                                "has_warning_statements": comb_has_warn, "additional_notes": comb_notes
-                            },
-                            timeout=300
-                        )
+                    res = requests.post(
+                        f"{API_URL}/check-nutrition-claims",
+                        json={
+                            "product_name":    nc_product_name,
+                            "product_type":    nc_product_type,
+                            "nip_text":        nc_nip_text,
+                            "selected_claims": selected_claims,
+                        },
+                        timeout=180
+                    )
+                    if res.status_code != 200:
+                        st.error(f"Backend error {res.status_code}: {res.text}")
                     else:
-                        payload = {
-                            "ingredient_text": comb_ingredient_input,
-                            "product_name": comb_product_name, "product_category": comb_product_category,
-                            "has_ingredients_list": comb_has_ing_list, "has_nip": comb_has_nip,
-                            "has_date_marking": comb_has_date, "has_country_of_origin": comb_has_coo,
-                            "has_allergen_declaration": comb_has_allergen, "allergens": comb_allergens,
-                            "has_warning_statements": comb_has_warn, "additional_notes": comb_notes
-                        }
-                        res = requests.post(f"{API_URL}/check-combined", json=payload, timeout=300)
+                        data = res.json()
+                        st.divider()
+                        overall = data.get("overall_status", "")
+                        msg     = data.get("overall_message", "")
+                        if overall == "COMPLIANT":
+                            st.success(f"✅ {overall} — {msg}")
+                        elif overall == "MOSTLY COMPLIANT":
+                            st.warning(f"⚠️ {overall} — {msg}")
+                        else:
+                            st.error(f"❌ {overall} — {msg}")
 
-                    data = res.json()
+                        st.divider()
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("Total Claims",  data.get("total_claims", 0))
+                        col2.metric("Approved",      data.get("approved", 0))
+                        col3.metric("Warnings",      data.get("warnings", 0))
+                        col4.metric("Rejected",      data.get("rejected", 0))
 
-                    # Overall banner
-                    st.divider()
-                    if data["overall_status"] == "PASS":
-                        st.success(f"✅ OVERALL: FULLY COMPLIANT — {data['summary']}")
-                    elif data["overall_status"] == "WARNING":
-                        st.warning(f"⚠️ OVERALL: REVIEW REQUIRED — {data['summary']}")
-                    else:
-                        st.error(f"❌ OVERALL: NON-COMPLIANT — {data['summary']}")
-
-                    # Summary metrics
-                    st.divider()
-                    st.markdown("#### Ingredients Summary")
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Total Ingredients", data["total_ingredient_checks"])
-                    c2.metric("Passed",   data["ingredients_passed"])
-                    c3.metric("Warnings", data["ingredients_warnings"])
-                    c4.metric("Failed",   data["ingredients_failed"])
-
-                    st.markdown("#### Labelling Summary")
-                    c5, c6, c7, c8 = st.columns(4)
-                    c5.metric("Total Checks", data["total_labelling_checks"])
-                    c6.metric("Passed",   data["labelling_passed"])
-                    c7.metric("Warnings", data["labelling_warnings"])
-                    c8.metric("Failed",   data["labelling_failed"])
-
-                    # Detailed results
-                    st.divider()
-                    st.markdown("#### Ingredient Results")
-                    _display_checks(data["ingredients_report"]["checks"], mode="ingredients")
-
-                    st.divider()
-                    st.markdown("#### Labelling Results")
-                    _display_checks(data["labelling_report"]["checks"], mode="labelling")
-
+                        st.divider()
+                        st.subheader("Claim Results")
+                        for result in data.get("results", []):
+                            status = result.get("status", "WARNING")
+                            claim  = result.get("claim", "")
+                            if status == "APPROVED":
+                                st.success(f"✅ **{claim}**  \n{result.get('message', '')}")
+                            elif status == "WARNING":
+                                st.warning(f"⚠️ **{claim}**  \n{result.get('message', '')}")
+                                if result.get("recommendation"):
+                                    st.markdown(f"> 💡 {result['recommendation']}")
+                            else:
+                                st.error(f"❌ **{claim}**  \n{result.get('message', '')}")
+                                if result.get("recommendation"):
+                                    st.markdown(f"> 💡 {result['recommendation']}")
+                            st.caption(
+                                f"Your value: {result.get('user_value', '—')}  |  "
+                                f"FSANZ threshold: {result.get('fsanz_threshold', '—')}  |  "
+                                f"Ref: {result.get('standard', '')}"
+                            )
+                            st.write("")
                 except Exception as e:
-                    st.error(f"Backend error: {e}")
+                    st.error(f"Connection error: {e}")

@@ -1,13 +1,15 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from rag_pipeline import answer_question
 from compliance_checker import (
     run_ingredients_compliance,
     run_labelling_compliance,
     run_combined_compliance
 )
+from labelling_checker import run_labelling_check, generate_label_html
+from nutrition_claims_checker import run_nutrition_claims_check
 
 app = FastAPI(title="FSANZ Regulatory Assistant")
 
@@ -37,6 +39,26 @@ class LabellingRequest(BaseModel):
     allergens:              Optional[str] = ""
     has_warning_statements: str
     additional_notes:       Optional[str] = ""
+
+# ── Label Checker (10-field structured) ─────────────────────
+class LabelCheckRequest(BaseModel):
+    product_name:          str = ""
+    business_name_address: str = ""
+    ingredient_list:       str = ""
+    allergen_declaration:  str = ""
+    nutrition_information: str = ""
+    country_of_origin:     str = ""
+    storage_instructions:  str = ""
+    net_weight_volume:     str = ""
+    date_marking:          str = ""
+    lot_identification:    str = ""
+
+# ── Nutrition Claims ─────────────────────────────────────────
+class NutritionClaimsRequest(BaseModel):
+    product_name:    str = ""
+    product_type:    str = ""
+    nip_text:        str
+    selected_claims: List[str]
 
 class CombinedRequest(BaseModel):
     ingredient_text:        str
@@ -93,6 +115,40 @@ async def check_compliance_image(file: UploadFile = File(...)):
 def check_labelling(request: LabellingRequest):
     form_data = request.dict()
     return run_labelling_compliance(form_data)
+
+# ── Module: Label Compliance (10 structured fields) ─────────
+
+@app.post("/check-label")
+def check_label(request: LabelCheckRequest):
+    label_data = request.model_dump()
+    if not any(v.strip() for v in label_data.values()):
+        raise HTTPException(status_code=400, detail="At least one label field must be provided.")
+    return run_labelling_check(label_data)
+
+# ── Module: Generate Label HTML ──────────────────────────────
+
+@app.post("/generate-label")
+def generate_label(request: LabelCheckRequest):
+    label_data = request.model_dump()
+    if not any(v.strip() for v in label_data.values()):
+        raise HTTPException(status_code=400, detail="At least one label field must be provided.")
+    html = generate_label_html(label_data)
+    return {"html": html}
+
+# ── Module: Nutrition Claims Validator ───────────────────────
+
+@app.post("/check-nutrition-claims")
+def check_nutrition_claims(request: NutritionClaimsRequest):
+    if not request.nip_text.strip():
+        raise HTTPException(status_code=400, detail="NIP text cannot be empty.")
+    if not request.selected_claims:
+        raise HTTPException(status_code=400, detail="At least one claim must be selected.")
+    return run_nutrition_claims_check(
+        product_name=request.product_name,
+        product_type=request.product_type,
+        nip_text=request.nip_text,
+        selected_claims=request.selected_claims
+    )
 
 # ── Module 3: Combined Compliance (text + form) ─────────────
 

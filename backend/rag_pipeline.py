@@ -47,8 +47,8 @@ def answer_question(question: str) -> dict:
         include_metadata=True
     )
 
-    chunks = [r["metadata"]["text"] for r in results["matches"]]
-    pages  = [r["metadata"]["page"] for r in results["matches"]]
+    chunks = [r["metadata"].get("text", "") for r in results["matches"] if r.get("metadata")]
+    pages  = [r["metadata"].get("page", r["metadata"].get("source", "unknown")) for r in results["matches"] if r.get("metadata")]
     context = "\n\n---\n\n".join(chunks)
 
     # Step 3: Ask Claude
@@ -81,14 +81,17 @@ Be concise, professional, and accurate. If genuinely unsure, say so clearly.
 
     response = claude_client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=1024,
+        max_tokens=2048,
         messages=[{"role": "user", "content": prompt}]
     )
 
     answer = response.content[0].text
 
-    # Step 4: Log to S3
-    log_to_s3(question, answer, pages)
+    # Step 4: Log to S3 (non-fatal)
+    try:
+        log_to_s3(question, answer, pages)
+    except Exception as e:
+        print(f"[log_to_s3] Warning: {e}")
 
     return {
         "answer": answer,
